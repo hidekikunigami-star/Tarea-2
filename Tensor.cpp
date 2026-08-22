@@ -1,0 +1,678 @@
+#include "Tensor.h"
+
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <random>
+#include <sstream>
+
+std::size_t Tensor::product(const std::vector<std::size_t>& shape) {
+    std::size_t result = 1;
+
+    for (std::size_t d : shape) {
+        if (d == 0) {
+            throw std::invalid_argument("Las dimensiones deben ser mayores que cero.");
+        }
+
+        if (result > std::numeric_limits<std::size_t>::max() / d) {
+            throw std::overflow_error("El tamano del tensor excede el limite.");
+        }
+
+        result *= d;
+    }
+
+    return result;
+}
+
+std::size_t Tensor::numel() const {
+    return product(shape_);
+}
+
+void Tensor::check_dimension_limit(
+    const std::vector<std::size_t>& shape) const {
+
+    if (shape.empty() || shape.size() > 3) {
+        throw std::invalid_argument(
+            "Un Tensor debe tener entre 1 y 3 dimensiones.");
+    }
+}
+
+void Tensor::allocate_and_zero() {
+    const std::size_t n = numel();
+
+    data_ = new double[n];
+    ref_count_ = new std::size_t(1);
+
+    std::fill(data_, data_ + n, 0.0);
+}
+
+void Tensor::release() {
+    if (ref_count_ != nullptr) {
+        --(*ref_count_);
+
+        if (*ref_count_ == 0) {
+            delete[] data_;
+            delete ref_count_;
+        }
+    }
+
+    data_ = nullptr;
+    ref_count_ = nullptr;
+}
+
+Tensor::Tensor(const std::vector<std::size_t>& shape,
+               const std::vector<double>& values)
+    : data_(nullptr), ref_count_(nullptr), shape_(shape) {
+
+    check_dimension_limit(shape_);
+
+    if (values.size() != product(shape_)) {
+        throw std::invalid_argument(
+            "La cantidad de valores no coincide con el tamano del tensor.");
+    }
+
+    data_ = new double[values.size()];
+    ref_count_ = new std::size_t(1);
+
+    std::copy(values.begin(), values.end(), data_);
+}
+
+Tensor::Tensor(const std::vector<std::size_t>& shape)
+    : data_(nullptr), ref_count_(nullptr), shape_(shape) {
+
+    check_dimension_limit(shape_);
+    allocate_and_zero();
+}
+
+Tensor Tensor::zeros(const std::vector<std::size_t>& shape) {
+    return Tensor(shape);
+}
+
+Tensor Tensor::ones(const std::vector<std::size_t>& shape) {
+    Tensor result(shape);
+
+    std::fill(result.data_, result.data_ + result.numel(), 1.0);
+
+    return result;
+}
+
+Tensor Tensor::random(const std::vector<std::size_t>& shape,
+                      double min, double max) {
+
+    if (min >= max) {
+        throw std::invalid_argument(
+            "En random(), min debe ser menor que max.");
+    }
+
+    Tensor result(shape);
+
+    std::random_device rd;
+    std::mt19937 generator(rd());
+    std::uniform_real_distribution<double> distribution(min, max);
+
+    for (std::size_t i = 0; i < result.numel(); ++i) {
+        result.data_[i] = distribution(generator);
+    }
+
+    return result;
+}
+
+Tensor Tensor::arange(double start, double end) {
+    if (start >= end) {
+        throw std::invalid_argument(
+            "arange() requiere start < end.");
+    }
+
+    // La tarea usa valores secuenciales con paso 1.
+    std::size_t n = static_cast<std::size_t>(
+        std::ceil(end - start));
+
+    // Para casos como arange(0, 6), genera 0,1,...,5.
+    while (n > 0 && start + static_cast<double>(n - 1) >= end) {
+        --n;
+    }
+
+    if (n == 0) {
+        throw std::invalid_argument(
+            "arange() no puede crear un tensor vacio.");
+    }
+
+    Tensor result({n});
+
+    for (std::size_t i = 0; i < n; ++i) {
+        result.data_[i] = start + static_cast<double>(i);
+    }
+
+    return result;
+}
+
+Tensor::Tensor(const Tensor& other)
+    : data_(nullptr), ref_count_(nullptr), shape_(other.shape_) {
+
+    const std::size_t n = other.numel();
+
+    data_ = new double[n];
+    ref_count_ = new std::size_t(1);
+
+    std::copy(other.data_, other.data_ + n, data_);
+}
+
+Tensor::Tensor(Tensor&& other) noexcept
+    : data_(other.data_),
+      ref_count_(other.ref_count_),
+      shape_(std::move(other.shape_)) {
+
+    other.data_ = nullptr;
+    other.ref_count_ = nullptr;
+    other.shape_.clear();
+}
+
+Tensor& Tensor::operator=(const Tensor& other) {
+    if (this == &other) {
+        return *this;
+    }
+
+    Tensor copy(other);
+    std::swap(data_, copy.data_);
+    std::swap(ref_count_, copy.ref_count_);
+    std::swap(shape_, copy.shape_);
+
+    return *this;
+}
+
+Tensor& Tensor::operator=(Tensor&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+
+    release();
+
+    data_ = other.data_;
+    ref_count_ = other.ref_count_;
+    shape_ = std::move(other.shape_);
+
+    other.data_ = nullptr;
+    other.ref_count_ = nullptr;
+    other.shape_.clear();
+
+    return *this;
+}
+
+Tensor::~Tensor() {
+    release();
+}
+
+const std::vector<std::size_t>& Tensor::shape() const {
+    return shape_;
+}
+
+std::size_t Tensor::size() const {
+    return numel();
+}
+
+std::size_t Tensor::ndim() const {
+    return shape_.size();
+}
+
+double& Tensor::operator[](std::size_t index) {
+    if (index >= numel()) {
+        throw std::out_of_range("Indice fuera de rango.");
+    }
+
+    return data_[index];
+}
+
+const double& Tensor::operator[](std::size_t index) const {
+    if (index >= numel()) {
+        throw std::out_of_range("Indice fuera de rango.");
+    }
+
+    return data_[index];
+}
+
+double& Tensor::at(std::size_t i) {
+    if (shape_.size() != 1) {
+        throw std::invalid_argument("at(i) requiere un tensor 1D.");
+    }
+
+    return (*this)[i];
+}
+
+const double& Tensor::at(std::size_t i) const {
+    if (shape_.size() != 1) {
+        throw std::invalid_argument("at(i) requiere un tensor 1D.");
+    }
+
+    return (*this)[i];
+}
+
+double& Tensor::at(std::size_t i, std::size_t j) {
+    if (shape_.size() != 2) {
+        throw std::invalid_argument("at(i,j) requiere un tensor 2D.");
+    }
+
+    if (i >= shape_[0] || j >= shape_[1]) {
+        throw std::out_of_range("Indice fuera de rango.");
+    }
+
+    return data_[i * shape_[1] + j];
+}
+
+const double& Tensor::at(std::size_t i, std::size_t j) const {
+    if (shape_.size() != 2) {
+        throw std::invalid_argument("at(i,j) requiere un tensor 2D.");
+    }
+
+    if (i >= shape_[0] || j >= shape_[1]) {
+        throw std::out_of_range("Indice fuera de rango.");
+    }
+
+    return data_[i * shape_[1] + j];
+}
+
+double& Tensor::at(std::size_t i, std::size_t j, std::size_t k) {
+    if (shape_.size() != 3) {
+        throw std::invalid_argument("at(i,j,k) requiere un tensor 3D.");
+    }
+
+    if (i >= shape_[0] || j >= shape_[1] || k >= shape_[2]) {
+        throw std::out_of_range("Indice fuera de rango.");
+    }
+
+    return data_[
+        i * shape_[1] * shape_[2]
+        + j * shape_[2]
+        + k
+    ];
+}
+
+const double& Tensor::at(std::size_t i,
+                         std::size_t j,
+                         std::size_t k) const {
+    if (shape_.size() != 3) {
+        throw std::invalid_argument("at(i,j,k) requiere un tensor 3D.");
+    }
+
+    if (i >= shape_[0] || j >= shape_[1] || k >= shape_[2]) {
+        throw std::out_of_range("Indice fuera de rango.");
+    }
+
+    return data_[
+        i * shape_[1] * shape_[2]
+        + j * shape_[2]
+        + k
+    ];
+}
+
+Tensor Tensor::view(const std::vector<std::size_t>& new_shape) const {
+    check_dimension_limit(new_shape);
+
+    if (product(new_shape) != numel()) {
+        throw std::invalid_argument(
+            "view() debe conservar la cantidad total de elementos.");
+    }
+
+    // Se comparte la memoria: no se copian los datos.
+    Tensor result(new_shape);
+    result.release();
+
+    result.data_ = data_;
+    result.ref_count_ = ref_count_;
+
+    ++(*ref_count_);
+
+    return result;
+}
+
+Tensor Tensor::unsqueeze(std::size_t dim) const {
+    if (shape_.size() >= 3) {
+        throw std::invalid_argument(
+            "unsqueeze() no puede superar 3 dimensiones.");
+    }
+
+    if (dim > shape_.size()) {
+        throw std::out_of_range(
+            "La dimension indicada para unsqueeze() no existe.");
+    }
+
+    std::vector<std::size_t> new_shape = shape_;
+    new_shape.insert(new_shape.begin() + static_cast<std::ptrdiff_t>(dim), 1);
+
+    return view(new_shape);
+}
+
+Tensor Tensor::concat(const std::vector<Tensor>& tensors,
+                      std::size_t dim) {
+
+    if (tensors.empty()) {
+        throw std::invalid_argument(
+            "concat() requiere al menos un tensor.");
+    }
+
+    const std::size_t dimensions = tensors[0].ndim();
+
+    if (dim >= dimensions) {
+        throw std::out_of_range(
+            "La dimension de concatenacion no existe.");
+    }
+
+    for (const Tensor& tensor : tensors) {
+        if (tensor.ndim() != dimensions) {
+            throw std::invalid_argument(
+                "Todos los tensores deben tener el mismo numero de dimensiones.");
+        }
+    }
+
+    std::vector<std::size_t> result_shape = tensors[0].shape();
+
+    for (std::size_t i = 1; i < tensors.size(); ++i) {
+        for (std::size_t d = 0; d < dimensions; ++d) {
+            if (d != dim &&
+                tensors[i].shape()[d] != result_shape[d]) {
+                throw std::invalid_argument(
+                    "Dimensiones incompatibles para concat().");
+            }
+        }
+
+        result_shape[dim] += tensors[i].shape()[dim];
+    }
+
+    Tensor result(result_shape);
+
+    // Copia por bloques para cualquier tensor de 1D, 2D o 3D.
+    const std::size_t outer =
+        [&]() {
+            std::size_t p = 1;
+            for (std::size_t d = 0; d < dim; ++d) {
+                p *= result_shape[d];
+            }
+            return p;
+        }();
+
+    const std::size_t inner =
+        [&]() {
+            std::size_t p = 1;
+            for (std::size_t d = dim + 1; d < dimensions; ++d) {
+                p *= result_shape[d];
+            }
+            return p;
+        }();
+
+    std::size_t result_offset = 0;
+
+    for (std::size_t outer_i = 0; outer_i < outer; ++outer_i) {
+        for (const Tensor& tensor : tensors) {
+            const std::size_t block =
+                tensor.shape()[dim] * inner;
+
+            const std::size_t source_offset =
+                outer_i * block;
+
+            std::copy(
+                tensor.data_ + source_offset,
+                tensor.data_ + source_offset + block,
+                result.data_ + result_offset
+            );
+
+            result_offset += block;
+        }
+    }
+
+    return result;
+}
+
+Tensor Tensor::operator+(const Tensor& other) const {
+    // Suma directa cuando las formas coinciden.
+    if (shape_ == other.shape_) {
+        Tensor result(shape_);
+
+        for (std::size_t i = 0; i < numel(); ++i) {
+            result.data_[i] = data_[i] + other.data_[i];
+        }
+
+        return result;
+    }
+
+    // Broadcasting 2D: (m,n) + (1,n).
+    if (shape_.size() == 2 &&
+        other.shape_.size() == 2 &&
+        other.shape_[0] == 1 &&
+        other.shape_[1] == shape_[1]) {
+
+        Tensor result(shape_);
+
+        for (std::size_t i = 0; i < shape_[0]; ++i) {
+            for (std::size_t j = 0; j < shape_[1]; ++j) {
+                result.at(i, j) =
+                    at(i, j) + other.at(0, j);
+            }
+        }
+
+        return result;
+    }
+
+    // Broadcasting 2D: (1,n) + (m,n).
+    if (shape_.size() == 2 &&
+        other.shape_.size() == 2 &&
+        shape_[0] == 1 &&
+        shape_[1] == other.shape_[1]) {
+
+        return other + *this;
+    }
+
+    throw std::invalid_argument(
+        "Dimensiones incompatibles para operator+.");
+}
+
+Tensor Tensor::operator-(const Tensor& other) const {
+    if (shape_ == other.shape_) {
+        Tensor result(shape_);
+
+        for (std::size_t i = 0; i < numel(); ++i) {
+            result.data_[i] = data_[i] - other.data_[i];
+        }
+
+        return result;
+    }
+
+    // Broadcasting 2D: (m,n) - (1,n).
+    if (shape_.size() == 2 &&
+        other.shape_.size() == 2 &&
+        other.shape_[0] == 1 &&
+        other.shape_[1] == shape_[1]) {
+
+        Tensor result(shape_);
+
+        for (std::size_t i = 0; i < shape_[0]; ++i) {
+            for (std::size_t j = 0; j < shape_[1]; ++j) {
+                result.at(i, j) =
+                    at(i, j) - other.at(0, j);
+            }
+        }
+
+        return result;
+    }
+
+    throw std::invalid_argument(
+        "Dimensiones incompatibles para operator-.");
+}
+
+Tensor Tensor::operator*(const Tensor& other) const {
+    if (shape_ != other.shape_) {
+        throw std::invalid_argument(
+            "Dimensiones incompatibles para multiplicacion elementwise.");
+    }
+
+    Tensor result(shape_);
+
+    for (std::size_t i = 0; i < numel(); ++i) {
+        result.data_[i] = data_[i] * other.data_[i];
+    }
+
+    return result;
+}
+
+Tensor Tensor::operator*(double scalar) const {
+    Tensor result(shape_);
+
+    for (std::size_t i = 0; i < numel(); ++i) {
+        result.data_[i] = data_[i] * scalar;
+    }
+
+    return result;
+}
+
+Tensor operator*(double scalar, const Tensor& tensor) {
+    return tensor * scalar;
+}
+
+Tensor Tensor::relu() const {
+    Tensor result(shape_);
+
+    for (std::size_t i = 0; i < numel(); ++i) {
+        result.data_[i] = std::max(0.0, data_[i]);
+    }
+
+    return result;
+}
+
+Tensor Tensor::sigmoid() const {
+    Tensor result(shape_);
+
+    for (std::size_t i = 0; i < numel(); ++i) {
+        // Forma numericamente estable.
+        if (data_[i] >= 0.0) {
+            result.data_[i] =
+                1.0 / (1.0 + std::exp(-data_[i]));
+        } else {
+            const double e = std::exp(data_[i]);
+            result.data_[i] = e / (1.0 + e);
+        }
+    }
+
+    return result;
+}
+
+void Tensor::print_shape(std::ostream& os) const {
+    os << "{";
+
+    for (std::size_t i = 0; i < shape_.size(); ++i) {
+        os << shape_[i];
+
+        if (i + 1 < shape_.size()) {
+            os << ", ";
+        }
+    }
+
+    os << "}";
+}
+
+void Tensor::print(std::ostream& os) const {
+    os << "shape = ";
+    print_shape(os);
+    os << "\n";
+
+    os << std::fixed << std::setprecision(4);
+
+    if (shape_.size() == 1) {
+        os << "[";
+
+        for (std::size_t i = 0; i < shape_[0]; ++i) {
+            os << data_[i];
+
+            if (i + 1 < shape_[0]) {
+                os << ", ";
+            }
+        }
+
+        os << "]\n";
+        return;
+    }
+
+    if (shape_.size() == 2) {
+        for (std::size_t i = 0; i < shape_[0]; ++i) {
+            os << "[";
+
+            for (std::size_t j = 0; j < shape_[1]; ++j) {
+                os << data_[i * shape_[1] + j];
+
+                if (j + 1 < shape_[1]) {
+                    os << ", ";
+                }
+            }
+
+            os << "]\n";
+        }
+
+        return;
+    }
+
+    for (std::size_t i = 0; i < shape_[0]; ++i) {
+        os << "Bloque " << i << ":\n";
+
+        for (std::size_t j = 0; j < shape_[1]; ++j) {
+            os << "[";
+
+            for (std::size_t k = 0; k < shape_[2]; ++k) {
+                os << at(i, j, k);
+
+                if (k + 1 < shape_[2]) {
+                    os << ", ";
+                }
+            }
+
+            os << "]\n";
+        }
+    }
+}
+
+Tensor dot(const Tensor& a, const Tensor& b) {
+    if (a.size() != b.size()) {
+        throw std::invalid_argument(
+            "dot() requiere tensores con igual cantidad de elementos.");
+    }
+
+    double sum = 0.0;
+
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        sum += a[i] * b[i];
+    }
+
+    return Tensor({1}, {sum});
+}
+
+Tensor matmul(const Tensor& a, const Tensor& b) {
+    if (a.ndim() != 2 || b.ndim() != 2) {
+        throw std::invalid_argument(
+            "matmul() requiere tensores bidimensionales.");
+    }
+
+    const std::size_t m = a.shape()[0];
+    const std::size_t k = a.shape()[1];
+
+    const std::size_t kb = b.shape()[0];
+    const std::size_t n = b.shape()[1];
+
+    if (k != kb) {
+        throw std::invalid_argument(
+            "Dimensiones incompatibles para multiplicacion matricial.");
+    }
+
+    Tensor result({m, n});
+
+    for (std::size_t i = 0; i < m; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+            double sum = 0.0;
+
+            for (std::size_t p = 0; p < k; ++p) {
+                sum += a.at(i, p) * b.at(p, j);
+            }
+
+            result.at(i, j) = sum;
+        }
+    }
+
+    return result;
+}
