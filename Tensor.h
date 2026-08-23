@@ -10,8 +10,8 @@
 using namespace std;
 
 class Tensor {
-private:
-    double* data_;
+private: 
+    double* data_; //CREACION DEL ARRAY DINAMICO CONTIGUO
     size_t* ref_count_;
     vector<size_t> shape_;
 
