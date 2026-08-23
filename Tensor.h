@@ -19,10 +19,10 @@ private:
     void release();
     void allocate_and_zero();
     void check_dimension_limit(const vector<size_t>& shape) const;
-    static size_t product(const vector<size_t>& shape);
+    static size_t product(const vector<size_t>& shape); //METODO ESTATICO PARA FACILITAR LA CREACION DE TENSORES
 
 public:
-
+//CREACION DEL CONSTRUCTOR PRINCIPAL:
     Tensor(const vector<size_t>& shape,
            const vector<double>& values);
 
